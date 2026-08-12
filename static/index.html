@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>MD Notes Agent</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/style.css"
+    >
+</head>
+
+<body>
+
+<main class="app-shell">
+
+    <header class="topbar">
+
+        <div>
+            <p class="eyebrow">
+                AI MARKDOWN ORGANIZER
+            </p>
+
+            <h1>
+                MD Notes Agent
+            </h1>
+
+            <p class="subtitle">
+                Turn raw explanations into clean,
+                structured Markdown notes.
+            </p>
+        </div>
+
+        <div
+            class="status-pill"
+            id="statusPill"
+        >
+            Ready
+        </div>
+
+    </header>
+
+
+    <section class="settings-bar">
+
+        <label>
+            Mode
+
+            <select id="modeSelect">
+                <option value="fast">
+                    ⚡ Fast
+                </option>
+
+                <option value="balanced" selected>
+                    ⚖ Balanced
+                </option>
+
+                <option value="quality">
+                    ✨ High Quality
+                </option>
+            </select>
+        </label>
+
+
+        <label>
+            Language
+
+            <select id="languageSelect">
+
+                <option value="auto" selected>
+                    Auto Detect
+                </option>
+
+                <option value="arabic">
+                    Arabic
+                </option>
+
+                <option value="english">
+                    English
+                </option>
+
+                <option value="arabic_english">
+                    Arabic + English Terms
+                </option>
+
+            </select>
+        </label>
+
+
+        <label>
+            Detail Level
+
+            <select id="detailSelect">
+
+                <option value="short">
+                    Short
+                </option>
+
+                <option value="medium">
+                    Medium
+                </option>
+
+                <option value="detailed">
+                    Detailed
+                </option>
+
+                <option value="preserve" selected>
+                    Preserve Everything
+                </option>
+
+            </select>
+        </label>
+
+    </section>
+
+
+    <section class="workspace">
+
+        <article class="panel">
+
+            <div class="panel-header">
+
+                <div>
+                    <span class="step-badge">
+                        01
+                    </span>
+
+                    <h2>
+                        Raw Explanation
+                    </h2>
+                </div>
+
+                <button
+                    class="ghost-button"
+                    id="clearButton"
+                    type="button"
+                >
+                    Clear
+                </button>
+
+            </div>
+
+
+            <textarea
+                id="inputText"
+                placeholder="Paste your explanation here..."
+                spellcheck="true"
+            ></textarea>
+
+
+            <div class="field-stack">
+
+                <label>
+                    File name
+
+                    <input
+                        id="fileNameInput"
+                        type="text"
+                        placeholder="ai-agents"
+                    >
+                </label>
+
+
+                <label>
+                    Extra instruction
+
+                    <input
+                        id="instructionInput"
+                        type="text"
+                        placeholder="Example: Keep explanations Arabic and technical terms English"
+                    >
+                </label>
+
+            </div>
+
+
+            <div class="input-stats">
+
+                <span>
+                    Characters:
+                    <strong id="inputCharacters">
+                        0
+                    </strong>
+                </span>
+
+                <span>
+                    Words:
+                    <strong id="inputWords">
+                        0
+                    </strong>
+                </span>
+
+            </div>
+
+
+            <button
+                class="primary-button"
+                id="organizeButton"
+                type="button"
+            >
+                Organize Notes
+            </button>
+
+
+            <button
+                class="danger-button hidden"
+                id="cancelButton"
+                type="button"
+            >
+                Cancel Generation
+            </button>
+
+        </article>
+
+
+        <article class="panel">
+
+            <div class="panel-header">
+
+                <div>
+                    <span class="step-badge">
+                        02
+                    </span>
+
+                    <h2>
+                        Result
+                    </h2>
+                </div>
+
+
+                <div class="result-actions">
+
+                    <button
+                        class="ghost-button active"
+                        id="markdownTab"
+                        type="button"
+                    >
+                        Markdown
+                    </button>
+
+                    <button
+                        class="ghost-button"
+                        id="previewTab"
+                        type="button"
+                    >
+                        Preview
+                    </button>
+
+                </div>
+
+            </div>
+
+
+            <textarea
+                id="markdownOutput"
+                class="result-editor"
+                placeholder="Generated Markdown will appear here..."
+                spellcheck="false"
+            ></textarea>
+
+
+            <div
+                id="previewOutput"
+                class="preview-output hidden"
+            ></div>
+
+
+            <div class="result-footer">
+
+                <div>
+
+                    <span>
+                        Output:
+                        <strong id="outputCharacters">
+                            0
+                        </strong>
+                        chars
+                    </span>
+
+                    <span>
+                        Time:
+                        <strong id="processingTime">
+                            0.0s
+                        </strong>
+                    </span>
+
+                </div>
+
+
+                <div>
+
+                    <button
+                        class="secondary-button"
+                        id="copyButton"
+                        type="button"
+                        disabled
+                    >
+                        Copy
+                    </button>
+
+                    <button
+                        class="secondary-button"
+                        id="downloadButton"
+                        type="button"
+                        disabled
+                    >
+                        Download .md
+                    </button>
+
+                </div>
+
+            </div>
+
+        </article>
+
+    </section>
+
+
+    <section class="process-card">
+
+        <div class="process-header">
+
+            <div>
+                <p class="eyebrow">
+                    LIVE PROCESS
+                </p>
+
+                <h2>
+                    Processing Pipeline
+                </h2>
+            </div>
+
+
+            <div
+                class="timer"
+                id="liveTimer"
+            >
+                0.0s
+            </div>
+
+        </div>
+
+
+        <div class="progress-track">
+
+            <div
+                class="progress-bar"
+                id="progressBar"
+            ></div>
+
+        </div>
+
+
+        <div
+            class="progress-percent"
+            id="progressPercent"
+        >
+            0%
+        </div>
+
+
+        <div
+            class="process-list"
+            id="processList"
+        >
+
+            <div
+                class="process-step"
+                data-stage="input_received"
+            >
+                <span class="process-icon">
+                    ○
+                </span>
+
+                Input received
+            </div>
+
+
+            <div
+                class="process-step"
+                data-stage="preparing"
+            >
+                <span class="process-icon">
+                    ○
+                </span>
+
+                Preparing instructions
+            </div>
+
+
+            <div
+                class="process-step"
+                data-stage="generating"
+            >
+                <span class="process-icon">
+                    ○
+                </span>
+
+                Generating Markdown
+            </div>
+
+
+            <div
+                class="process-step"
+                data-stage="validating"
+            >
+                <span class="process-icon">
+                    ○
+                </span>
+
+                Validating Markdown
+            </div>
+
+
+            <div
+                class="process-step"
+                data-stage="reviewing"
+            >
+                <span class="process-icon">
+                    ○
+                </span>
+
+                AI quality review
+            </div>
+
+
+            <div
+                class="process-step"
+                data-stage="finalizing"
+            >
+                <span class="process-icon">
+                    ○
+                </span>
+
+                Finalizing
+            </div>
+
+        </div>
+
+
+        <div
+            class="validation-box hidden"
+            id="validationBox"
+        ></div>
+
+    </section>
+
+</main>
+
+
+<script
+    src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"
+></script>
+
+<script
+    src="/static/app.js"
+></script>
+
+</body>
+</html>
