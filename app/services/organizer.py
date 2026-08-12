@@ -1,15 +1,32 @@
 from __future__ import annotations
 
+import re
 import time
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    as_completed,
+)
 from dataclasses import dataclass
 
-from app.core.prompts import build_organizer_prompt
-from app.services.chunker import chunk_text, should_chunk
-from app.services.llm import llm_service
-from app.services.reviewer import reviewer_service
+from app.core.config import settings
+from app.core.prompts import (
+    build_organizer_prompt,
+)
+from app.services.chunker import (
+    chunk_text,
+    get_chunk_size_for_mode,
+)
+from app.services.llm import (
+    clean_model_output,
+    llm_service,
+)
+from app.services.reviewer import (
+    reviewer_service,
+)
 from app.services.validator import (
     MarkdownValidationResult,
     validate_markdown,
+    validation_score,
 )
 
 
@@ -18,6 +35,8 @@ class OrganizationResult:
     markdown: str
 
     reviewed: bool
+
+    retried: bool
 
     processing_time: float
 
@@ -28,8 +47,19 @@ class OrganizationResult:
     validation: MarkdownValidationResult
 
 
+@dataclass
+class Candidate:
+    markdown: str
+
+    validation: MarkdownValidationResult
+
+    reviewed: bool = False
+
+    retried: bool = False
+
+
 class OrganizerService:
-    def _build_user_prompt(
+    def build_user_prompt(
         self,
         text: str,
         chunk_index: int | None = None,
@@ -37,11 +67,18 @@ class OrganizerService:
     ) -> str:
         if chunk_index is not None and total_chunks is not None:
             return f"""
-This is chunk {chunk_index} of {total_chunks}.
+Organize ONLY this source segment into Markdown notes.
 
-Organize ONLY this chunk.
+This is source segment {chunk_index} of {total_chunks}.
 
-Do not invent content from other chunks.
+IMPORTANT:
+- Return only Markdown.
+- Do not discuss the segment number.
+- Do not explain your reasoning.
+- Do not say you are merging or processing chunks.
+- Preserve the source meaning.
+- Follow the requested detail level.
+- Do not invent facts.
 
 SOURCE:
 
@@ -49,56 +86,431 @@ SOURCE:
 """.strip()
 
         return f"""
-Organize the following source into clean Markdown notes.
+Organize the following source into Markdown notes.
+
+IMPORTANT:
+- Return only the final Markdown.
+- Do not explain your reasoning.
+- Do not describe what you are doing.
+- Follow the requested detail level exactly.
+- Do not invent facts.
 
 SOURCE:
 
 {text}
 """.strip()
 
+    def output_budget(
+        self,
+        detail_level: str,
+        mode: str,
+    ) -> int:
+        return settings.output_token_budget(
+            detail_level,
+            mode,
+        )
+
+    def chunk_budget(
+        self,
+        detail_level: str,
+        mode: str,
+    ) -> int:
+        return settings.chunk_output_token_budget(
+            detail_level,
+            mode,
+        )
+
+    def should_use_single_pass(
+        self,
+        source: str,
+        mode: str,
+    ) -> bool:
+        if mode == "fast":
+            return len(source) <= settings.FAST_SINGLE_PASS_MAX_CHARS
+
+        return len(source) <= settings.CHUNK_SIZE
+
     def _organize_single(
         self,
         text: str,
         system_prompt: str,
+        detail_level: str,
+        mode: str,
     ) -> str:
-        user_prompt = self._build_user_prompt(
+        user_prompt = self.build_user_prompt(
             text=text,
         )
 
-        return llm_service.generate(
+        result = llm_service.generate(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            max_tokens=(
+                self.output_budget(
+                    detail_level,
+                    mode,
+                )
+            ),
         )
 
-    def _organize_chunks(
+        return clean_model_output(result)
+
+    def _generate_chunk(
         self,
-        text: str,
+        chunk: str,
+        index: int,
+        total: int,
         system_prompt: str,
-    ) -> str:
-        chunks = chunk_text(text)
+        detail_level: str,
+        mode: str,
+    ) -> tuple[int, str]:
+        prompt = self.build_user_prompt(
+            text=chunk,
+            chunk_index=index,
+            total_chunks=total,
+        )
 
-        generated_chunks: list[str] = []
+        result = llm_service.generate(
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            max_tokens=(
+                self.chunk_budget(
+                    detail_level,
+                    mode,
+                )
+            ),
+        )
 
+        return (
+            index,
+            clean_model_output(result),
+        )
+
+    def generate_chunks_parallel(
+        self,
+        chunks: list[str],
+        system_prompt: str,
+        detail_level: str,
+        mode: str,
+    ) -> list[str]:
         total = len(chunks)
 
-        for index, chunk in enumerate(
-            chunks,
-            start=1,
+        if total == 1:
+            _, result = self._generate_chunk(
+                chunk=chunks[0],
+                index=1,
+                total=1,
+                system_prompt=(system_prompt),
+                detail_level=(detail_level),
+                mode=mode,
+            )
+
+            return [result]
+
+        workers = min(
+            settings.MAX_PARALLEL_CHUNKS,
+            total,
+        )
+
+        results: dict[int, str] = {}
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    self._generate_chunk,
+                    chunk,
+                    index,
+                    total,
+                    system_prompt,
+                    detail_level,
+                    mode,
+                )
+                for index, chunk in enumerate(
+                    chunks,
+                    start=1,
+                )
+            ]
+
+            for future in as_completed(futures):
+                index, result = future.result()
+
+                if not result:
+                    raise RuntimeError(f"Chunk {index} returned an empty result.")
+
+                results[index] = result
+
+        return [
+            results[index]
+            for index in range(
+                1,
+                total + 1,
+            )
+        ]
+
+    def fast_merge_chunks(
+        self,
+        generated_chunks: list[str],
+    ) -> str:
+        cleaned: list[str] = []
+
+        for index, chunk in enumerate(generated_chunks):
+            chunk = clean_model_output(chunk).strip()
+
+            if not chunk:
+                continue
+
+            if index > 0:
+                # Remove an additional H1 title
+                # from later chunks.
+                chunk = re.sub(
+                    r"\A\s*#\s+[^\n]+\n+",
+                    "",
+                    chunk,
+                    count=1,
+                ).strip()
+
+            cleaned.append(chunk)
+
+        if not cleaned:
+            raise RuntimeError("No generated content is available.")
+
+        return "\n\n".join(cleaned).strip()
+
+    def merge_chunks(
+        self,
+        generated_chunks: list[str],
+        system_prompt: str,
+        detail_level: str = "preserve",
+        mode: str = "balanced",
+    ) -> str:
+        cleaned_chunks = [
+            clean_model_output(chunk).strip()
+            for chunk in generated_chunks
+            if chunk.strip()
+        ]
+
+        if not cleaned_chunks:
+            raise ValueError("No generated chunks to merge.")
+
+        if len(cleaned_chunks) == 1:
+            return cleaned_chunks[0]
+
+        if mode == "fast":
+            return self.fast_merge_chunks(cleaned_chunks)
+
+        combined = ("\n\n----- CHUNK BOUNDARY -----\n\n").join(cleaned_chunks)
+
+        user_prompt = f"""
+Return ONE final Markdown document by combining the
+organized Markdown sections below.
+
+CRITICAL:
+- Output Markdown only.
+- Do not output analysis or reasoning.
+- Do not describe how you merged the sections.
+- Never mention chunks or chunk boundaries.
+- Remove exact duplication.
+- Fix duplicate headings.
+- Preserve logical order.
+- Do not add external information.
+- Follow the requested detail level.
+- Do not expand the content unnecessarily.
+
+MARKDOWN SECTIONS:
+
+{combined}
+""".strip()
+
+        merged = llm_service.generate(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=0.1,
+            max_tokens=(
+                self.output_budget(
+                    detail_level,
+                    mode,
+                )
+            ),
+        )
+
+        merged = clean_model_output(merged)
+
+        if not merged:
+            raise RuntimeError("Chunk merge returned an empty result.")
+
+        return merged
+
+    def organize_initial(
+        self,
+        source: str,
+        system_prompt: str,
+        detail_level: str,
+        mode: str,
+    ) -> str:
+        if self.should_use_single_pass(
+            source,
+            mode,
         ):
-            user_prompt = self._build_user_prompt(
-                text=chunk,
-                chunk_index=index,
-                total_chunks=total,
+            return self._organize_single(
+                text=source,
+                system_prompt=(system_prompt),
+                detail_level=(detail_level),
+                mode=mode,
             )
 
-            result = llm_service.generate(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+        chunk_size = get_chunk_size_for_mode(mode)
+
+        chunks = chunk_text(
+            source,
+            chunk_size=chunk_size,
+        )
+
+        generated_chunks = self.generate_chunks_parallel(
+            chunks=chunks,
+            system_prompt=(system_prompt),
+            detail_level=(detail_level),
+            mode=mode,
+        )
+
+        return self.merge_chunks(
+            generated_chunks=(generated_chunks),
+            system_prompt=(system_prompt),
+            detail_level=(detail_level),
+            mode=mode,
+        )
+
+    def validate_candidate(
+        self,
+        markdown: str,
+        source: str,
+        language: str,
+        detail_level: str,
+    ) -> MarkdownValidationResult:
+        return validate_markdown(
+            markdown=markdown,
+            source_text=source,
+            expected_language=language,
+            detail_level=detail_level,
+        )
+
+    def choose_best_candidate(
+        self,
+        candidates: list[Candidate],
+    ) -> Candidate:
+        if not candidates:
+            raise RuntimeError("No generation candidate is available.")
+
+        return max(
+            candidates,
+            key=lambda candidate: validation_score(candidate.validation),
+        )
+
+    def improve_candidate(
+        self,
+        source: str,
+        markdown: str,
+        language: str,
+        detail_level: str,
+        mode: str,
+    ) -> Candidate:
+        initial_validation = self.validate_candidate(
+            markdown=markdown,
+            source=source,
+            language=language,
+            detail_level=detail_level,
+        )
+
+        initial = Candidate(
+            markdown=markdown,
+            validation=initial_validation,
+        )
+
+        # FAST means FAST.
+        # No second LLM call.
+        if mode == "fast":
+            return initial
+
+        candidates = [initial]
+
+        should_review = mode == "quality" or (
+            mode == "balanced" and not (initial_validation.valid)
+        )
+
+        if not should_review:
+            return initial
+
+        reviewed_markdown = reviewer_service.review(
+            source_text=source,
+            generated_markdown=(markdown),
+            expected_language=(language),
+            detail_level=(detail_level),
+        )
+
+        reviewed_markdown = clean_model_output(reviewed_markdown)
+
+        reviewed_validation = self.validate_candidate(
+            markdown=(reviewed_markdown),
+            source=source,
+            language=language,
+            detail_level=detail_level,
+        )
+
+        candidates.append(
+            Candidate(
+                markdown=(reviewed_markdown),
+                validation=(reviewed_validation),
+                reviewed=True,
+            )
+        )
+
+        retry_count = 0
+
+        current_markdown = reviewed_markdown
+
+        current_validation = reviewed_validation
+
+        while (
+            mode == "quality"
+            and not current_validation.valid
+            and retry_count < settings.MAX_GENERATION_RETRIES
+        ):
+            validation_messages = [
+                (f"{issue.code}: {issue.message}")
+                for issue in current_validation.issues
+                if (issue.severity == "error")
+            ]
+
+            repaired = reviewer_service.repair(
+                source_text=source,
+                generated_markdown=(current_markdown),
+                validation_messages=(validation_messages),
+                expected_language=(language),
+                detail_level=(detail_level),
             )
 
-            generated_chunks.append(result.strip())
+            repaired = clean_model_output(repaired)
 
-        return "\n\n---\n\n".join(generated_chunks)
+            repaired_validation = self.validate_candidate(
+                markdown=repaired,
+                source=source,
+                language=language,
+                detail_level=detail_level,
+            )
+
+            candidates.append(
+                Candidate(
+                    markdown=repaired,
+                    validation=(repaired_validation),
+                    reviewed=True,
+                    retried=True,
+                )
+            )
+
+            current_markdown = repaired
+            current_validation = repaired_validation
+
+            retry_count += 1
+
+        return self.choose_best_candidate(candidates)
 
     def organize(
         self,
@@ -117,74 +529,39 @@ SOURCE:
 
         system_prompt = build_organizer_prompt(
             language=language,
-            detail_level=detail_level,
+            detail_level=(detail_level),
             mode=mode,
-            extra_instruction=instruction,
+            extra_instruction=(instruction),
         )
 
-        if should_chunk(source):
-            markdown = self._organize_chunks(
-                text=source,
-                system_prompt=system_prompt,
-            )
-        else:
-            markdown = self._organize_single(
-                text=source,
-                system_prompt=system_prompt,
-            )
-
-        validation = validate_markdown(
-            markdown=markdown,
-            source_text=source,
-            expected_language=language,
+        initial_markdown = self.organize_initial(
+            source=source,
+            system_prompt=(system_prompt),
+            detail_level=(detail_level),
+            mode=mode,
         )
 
-        reviewed = False
-
-        should_review = False
-
-        if mode == "quality":
-            should_review = True
-
-        elif mode == "balanced":
-            should_review = not validation.valid or any(
-                issue.severity
-                in {
-                    "warning",
-                    "error",
-                }
-                for issue in validation.issues
-            )
-
-        elif mode == "fast":
-            should_review = False
-
-        if should_review:
-            markdown = reviewer_service.review(
-                source_text=source,
-                generated_markdown=markdown,
-            )
-
-            reviewed = True
-
-            validation = validate_markdown(
-                markdown=markdown,
-                source_text=source,
-                expected_language=language,
-            )
+        best = self.improve_candidate(
+            source=source,
+            markdown=(initial_markdown),
+            language=language,
+            detail_level=(detail_level),
+            mode=mode,
+        )
 
         finished_at = time.perf_counter()
 
         return OrganizationResult(
-            markdown=markdown.strip(),
-            reviewed=reviewed,
+            markdown=(best.markdown.strip()),
+            reviewed=best.reviewed,
+            retried=best.retried,
             processing_time=round(
                 finished_at - started_at,
                 3,
             ),
             input_characters=len(source),
-            output_characters=len(markdown),
-            validation=validation,
+            output_characters=len(best.markdown),
+            validation=(best.validation),
         )
 
 

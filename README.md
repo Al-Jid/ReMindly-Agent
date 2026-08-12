@@ -123,7 +123,6 @@ Study-Notes/
 │   ├── style.css
 │   └── app.js
 │
-├── server.py
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
@@ -134,7 +133,6 @@ Study-Notes/
 
 | File / Directory   | Description                            |
 | ------------------ | -------------------------------------- |
-| `server.py`        | Main FastAPI server and AI integration |
 | `static/`          | Frontend HTML, CSS, and JavaScript     |
 | `app/`             | Modular application structure          |
 | `requirements.txt` | Python dependencies                    |
@@ -256,7 +254,7 @@ MODEL_NAME=your_model_name
 Start the FastAPI server:
 
 ```bash
-uvicorn server:app --reload
+uvicorn app.main:app --reload
 ```
 
 You should see output similar to:
@@ -542,7 +540,7 @@ pip install -r requirements.txt
 Run the server with automatic reload:
 
 ```bash
-uvicorn server:app --reload
+uvicorn app.main:app --reload
 ```
 
 The `--reload` option automatically restarts the development server whenever Python source files change.

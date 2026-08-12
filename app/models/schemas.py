@@ -1,6 +1,10 @@
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+MAX_INPUT_CHARACTERS = 100_000
+MAX_INSTRUCTION_CHARACTERS = 2_000
+
 
 ProcessingMode = Literal[
     "fast",
@@ -27,11 +31,13 @@ class OrganizeRequest(BaseModel):
     text: str = Field(
         ...,
         min_length=1,
+        max_length=MAX_INPUT_CHARACTERS,
         description="Raw explanation to organize",
     )
 
-    instruction: Optional[str] = Field(
+    instruction: str | None = Field(
         default=None,
+        max_length=MAX_INSTRUCTION_CHARACTERS,
         description="Optional custom instruction",
     )
 
@@ -63,7 +69,9 @@ class ValidationIssue(BaseModel):
 class ValidationResult(BaseModel):
     valid: bool
 
-    issues: list[ValidationIssue] = []
+    issues: list[ValidationIssue] = Field(
+        default_factory=list,
+    )
 
 
 class OrganizeResponse(BaseModel):
@@ -83,7 +91,7 @@ class OrganizeResponse(BaseModel):
 
     output_characters: int
 
-    validation: Optional[ValidationResult] = None
+    validation: ValidationResult | None = None
 
 
 class ErrorResponse(BaseModel):

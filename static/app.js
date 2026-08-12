@@ -163,7 +163,10 @@ function setProcessStage(
       );
 
       if (index < currentIndex) {
-        element.classList.add("done");
+        element.classList.add(
+          "done"
+        );
+
         icon.textContent = "✓";
       }
 
@@ -185,11 +188,13 @@ function setProcessStage(
 }
 
 
-function markProcessCompleted() {
+function markProcessCompleted(reviewed = false) {
   stageOrder.forEach(
     (stageName) => {
       const element =
-        getProcessElement(stageName);
+        getProcessElement(
+          stageName
+        );
 
       if (!element) {
         return;
@@ -207,10 +212,12 @@ function markProcessCompleted() {
       if (
         stageName === "reviewing"
         &&
-        !element.classList.contains(
-          "done"
-        )
+        !reviewed
       ) {
+        element.classList.remove(
+          "done"
+        );
+
         element.classList.add(
           "skipped"
         );
@@ -269,7 +276,9 @@ function resetProcess() {
   stageOrder.forEach(
     (stageName) => {
       const element =
-        getProcessElement(stageName);
+        getProcessElement(
+          stageName
+        );
 
       if (!element) {
         return;
@@ -384,8 +393,10 @@ function sanitizeFileName(
         ""
       );
 
-  return cleaned
-    || "organized-notes";
+  return (
+    cleaned
+    || "organized-notes"
+  );
 }
 
 
@@ -567,17 +578,17 @@ function showValidation(
 
   validationBox.innerHTML =
     `
-        <strong>
-            ${hasError
+      <strong>
+        ${hasError
       ? "Validation problems detected:"
       : "Validation warnings:"
     }
-        </strong>
+      </strong>
 
-        <ul>
-            ${list}
-        </ul>
-        `;
+      <ul>
+        ${list}
+      </ul>
+    `;
 }
 
 
@@ -622,8 +633,31 @@ function updatePreview() {
     return;
   }
 
-  previewOutput.innerHTML =
-    marked.parse(markdown);
+  const rendered =
+    marked.parse(
+      markdown
+    );
+
+  if (
+    typeof DOMPurify
+    !== "undefined"
+  ) {
+    previewOutput.innerHTML =
+      DOMPurify.sanitize(
+        rendered
+      );
+
+    return;
+  }
+
+  /*
+   * Fail safely.
+   *
+   * If DOMPurify failed to load,
+   * do not inject generated HTML.
+   */
+  previewOutput.textContent =
+    markdown;
 }
 
 
@@ -697,6 +731,9 @@ function handleReplaceEvent(
     currentMarkdown;
 
   updateOutputStats();
+
+  markdownOutput.scrollTop =
+    markdownOutput.scrollHeight;
 }
 
 
@@ -712,9 +749,9 @@ function handleCompletedEvent(
 
     markdownOutput.value =
       currentMarkdown;
-  }
 
-  updateOutputStats();
+    updateOutputStats();
+  }
 
   processingTime.textContent =
     `${Number(
@@ -728,7 +765,9 @@ function handleCompletedEvent(
 
   updateProgress(100);
 
-  markProcessCompleted();
+  markProcessCompleted(
+    Boolean(data.reviewed)
+  );
 
   setStatus(
     "Completed",
@@ -821,6 +860,72 @@ function parseSSEBlock(
 }
 
 
+function processParsedSSEEvent(
+  parsedEvent,
+) {
+  const {
+    event: eventName,
+    data,
+  } = parsedEvent;
+
+  if (
+    eventName
+    === "progress"
+  ) {
+    handleProgressEvent(
+      data
+    );
+
+    return false;
+  }
+
+  if (
+    eventName
+    === "token"
+  ) {
+    handleTokenEvent(
+      data
+    );
+
+    return false;
+  }
+
+  if (
+    eventName
+    === "replace"
+  ) {
+    handleReplaceEvent(
+      data
+    );
+
+    return false;
+  }
+
+  if (
+    eventName
+    === "completed"
+  ) {
+    handleCompletedEvent(
+      data
+    );
+
+    return true;
+  }
+
+  if (
+    eventName
+    === "error"
+  ) {
+    throw new Error(
+      data.message
+      || "Unknown processing error."
+    );
+  }
+
+  return false;
+}
+
+
 async function processSSEStream(
   response,
 ) {
@@ -840,6 +945,8 @@ async function processSSEStream(
 
   let buffer = "";
 
+  let completed = false;
+
   while (true) {
     const {
       value,
@@ -848,6 +955,13 @@ async function processSSEStream(
       await reader.read();
 
     if (done) {
+      /*
+       * Flush any remaining bytes
+       * held by TextDecoder.
+       */
+      buffer +=
+        decoder.decode();
+
       break;
     }
 
@@ -893,66 +1007,56 @@ async function processSSEStream(
         continue;
       }
 
-      const event =
+      const parsedEvent =
         parseSSEBlock(
           block
         );
 
-      if (!event) {
+      if (!parsedEvent) {
         continue;
       }
 
-      const {
-        event: eventName,
-        data,
-      } = event;
-
-      if (
-        eventName
-        === "progress"
-      ) {
-        handleProgressEvent(
-          data
+      const eventCompleted =
+        processParsedSSEEvent(
+          parsedEvent
         );
-      }
 
-      else if (
-        eventName
-        === "token"
-      ) {
-        handleTokenEvent(
-          data
-        );
-      }
-
-      else if (
-        eventName
-        === "replace"
-      ) {
-        handleReplaceEvent(
-          data
-        );
-      }
-
-      else if (
-        eventName
-        === "completed"
-      ) {
-        handleCompletedEvent(
-          data
-        );
-      }
-
-      else if (
-        eventName
-        === "error"
-      ) {
-        throw new Error(
-          data.message
-          || "Unknown processing error."
-        );
+      if (eventCompleted) {
+        completed = true;
       }
     }
+  }
+
+  /*
+   * Handle a final SSE event
+   * even if the connection ended
+   * without a trailing blank line.
+   */
+  const remainingBlock =
+    buffer.trim();
+
+  if (remainingBlock) {
+    const parsedEvent =
+      parseSSEBlock(
+        remainingBlock
+      );
+
+    if (parsedEvent) {
+      const eventCompleted =
+        processParsedSSEEvent(
+          parsedEvent
+        );
+
+      if (eventCompleted) {
+        completed = true;
+      }
+    }
+  }
+
+  if (!completed) {
+    throw new Error(
+      "The connection ended before processing completed."
+    );
   }
 }
 
@@ -979,7 +1083,7 @@ async function organizeNotes() {
 
   markdownOutput.value = "";
 
-  previewOutput.innerHTML = "";
+  previewOutput.textContent = "";
 
   updateOutputStats();
 
@@ -1038,8 +1142,7 @@ async function organizeNotes() {
             ),
 
           signal:
-            abortController
-              .signal,
+            abortController.signal,
         }
       );
 
@@ -1051,13 +1154,28 @@ async function organizeNotes() {
         const data =
           await response.json();
 
-        message =
-          data.detail
-          || message;
+        if (
+          typeof data.detail
+          === "string"
+        ) {
+          message = data.detail;
+        }
+
+        else if (
+          data.detail?.message
+        ) {
+          message =
+            data.detail.message;
+        }
+
+        else if (data.error) {
+          message =
+            data.error;
+        }
       }
 
       catch {
-        // Ignore JSON failure.
+        // Ignore JSON parsing failure.
       }
 
       throw new Error(
@@ -1088,7 +1206,9 @@ async function organizeNotes() {
     }
 
     else {
-      console.error(error);
+      console.error(
+        error
+      );
 
       markProcessError();
 
@@ -1109,7 +1229,9 @@ async function organizeNotes() {
   finally {
     stopTimer();
 
-    setRunningState(false);
+    setRunningState(
+      false
+    );
 
     abortController = null;
 
@@ -1145,7 +1267,7 @@ clearButton.addEventListener(
 
     markdownOutput.value = "";
 
-    previewOutput.innerHTML = "";
+    previewOutput.textContent = "";
 
     instructionInput.value = "";
 
@@ -1165,11 +1287,15 @@ clearButton.addEventListener(
 
     resetProcess();
 
-    setStatus("Ready");
+    setStatus(
+      "Ready"
+    );
 
-    copyButton.disabled = true;
+    copyButton.disabled =
+      true;
 
-    downloadButton.disabled = true;
+    downloadButton.disabled =
+      true;
 
     localStorage.removeItem(
       STORAGE_KEY
@@ -1193,7 +1319,9 @@ copyButton.addEventListener(
     try {
       await navigator
         .clipboard
-        .writeText(text);
+        .writeText(
+          text
+        );
 
       setStatus(
         "Copied",
@@ -1336,7 +1464,9 @@ markdownOutput.addEventListener(
     if (
       !previewOutput
         .classList
-        .contains("hidden")
+        .contains(
+          "hidden"
+        )
     ) {
       updatePreview();
     }
@@ -1380,6 +1510,8 @@ updateInputStats();
 
 updateOutputStats();
 
-setStatus("Ready");
+setStatus(
+  "Ready"
+);
 
 inputText.focus();
