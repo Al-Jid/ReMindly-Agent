@@ -70,6 +70,22 @@ const progressPercent =
 const validationBox =
   document.getElementById("validationBox");
 
+const githubStarCount =
+  document.getElementById("githubStarCount");
+
+const githubStarLink =
+  document.getElementById("githubStarLink");
+
+
+const GITHUB_REPO =
+  "Al-Jid/ReMindly-Agent";
+
+const GITHUB_REPO_URL =
+  `https://github.com/${GITHUB_REPO}`;
+
+const GITHUB_API_URL =
+  `https://api.github.com/repos/${GITHUB_REPO}`;
+
 
 let abortController = null;
 
@@ -188,7 +204,9 @@ function setProcessStage(
 }
 
 
-function markProcessCompleted(reviewed = false) {
+function markProcessCompleted(
+  reviewed = false
+) {
   stageOrder.forEach(
     (stageName) => {
       const element =
@@ -1504,7 +1522,95 @@ detailSelect.addEventListener(
 );
 
 
+/*
+ * GitHub Star Counter
+ *
+ * Gets the current number of stars
+ * directly from GitHub's public API.
+ */
+async function loadGitHubStars() {
+  if (!githubStarCount) {
+    return;
+  }
+
+  if (githubStarLink) {
+    githubStarLink.href =
+      GITHUB_REPO_URL;
+  }
+
+  const controller =
+    new AbortController();
+
+  const timeoutId =
+    setTimeout(
+      () => {
+        controller.abort();
+      },
+      5000,
+    );
+
+  try {
+    const response =
+      await fetch(
+        GITHUB_API_URL,
+        {
+          headers: {
+            Accept:
+              "application/vnd.github+json",
+          },
+
+          signal:
+            controller.signal,
+        },
+      );
+
+    if (!response.ok) {
+      throw new Error(
+        `GitHub API HTTP ${response.status}`
+      );
+    }
+
+    const data =
+      await response.json();
+
+    const stars =
+      Number(
+        data.stargazers_count
+      );
+
+    if (!Number.isFinite(stars)) {
+      throw new Error(
+        "Invalid GitHub star count."
+      );
+    }
+
+    githubStarCount.textContent =
+      new Intl.NumberFormat()
+        .format(stars);
+
+    githubStarCount.title =
+      `${stars} GitHub stars`;
+  }
+
+  catch (error) {
+    githubStarCount.textContent =
+      "";
+
+    console.warn(
+      "Could not load GitHub stars:",
+      error,
+    );
+  }
+
+  finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+
 restoreDraft();
+
+loadGitHubStars();
 
 updateInputStats();
 

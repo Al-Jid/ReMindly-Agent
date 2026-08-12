@@ -142,7 +142,7 @@ class Settings:
     # Application
     # =========================================================
 
-    APP_NAME: str = "MD Notes Agent"
+    APP_NAME: str = "ReMindly Agent"
 
     APP_VERSION: str = "2.2.1"
 

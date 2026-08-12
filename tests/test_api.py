@@ -19,7 +19,7 @@ def test_health_endpoint():
         "degraded",
     }
 
-    assert data["service"] == "MD Notes Agent"
+    assert data["service"] == "ReMindly Agent"
 
     assert "version" in data
 
