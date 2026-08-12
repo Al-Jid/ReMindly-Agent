@@ -1,11 +1,26 @@
+[project]
+name = "remindly-agent"
+version = "1.0.0"
+description = "AI-powered Markdown notes organizer"
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    "fastapi==0.141.1",
+    "openai==3.0.0",
+    "python-dotenv==1.2.2",
+    "slowapi==0.1.10",
+    "uvicorn==0.52.1",
+]
+
+
 [tool.black]
 line-length = 88
-target-version = ["py311"]
+target-version = ["py312"]
 
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py312"
 exclude = [
     ".venv",
     "__pycache__",
@@ -21,6 +36,7 @@ select = [
     "UP",
     "B",
 ]
+
 ignore = [
     "E501",
 ]
@@ -31,7 +47,8 @@ known-first-party = ["app"]
 
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
+
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -49,4 +66,5 @@ exclude = [
 module = [
     "slowapi.*",
 ]
+
 ignore_missing_imports = true
